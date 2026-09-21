@@ -313,30 +313,36 @@ target/webapplication.jar`):
 
 **Cloud platform used:** AWS EC2 (Amazon Linux, systemd-managed process).
 
-**Public deployment URL:** `TODO — fill in with the EC2 public IP/DNS after deploying, e.g. http://<public-ip>:8080/`
+**Public deployment URL:** [http://13.217.224.52:8080/](http://13.217.224.52:8080/)
 
-**Example URLs once deployed:**
+**Example URLs (live):**
 
-- Static page: `http://<public-ip>:8080/`
-- Static image: `http://<public-ip>:8080/images/logo.png`
-- REST endpoint 1: `http://<public-ip>:8080/hello?name=Cloud`
-- REST endpoint 2: `http://<public-ip>:8080/pi`
+- Static page: [http://13.217.224.52:8080/](http://13.217.224.52:8080/)
+- Static image: [http://13.217.224.52:8080/images/logo.png](http://13.217.224.52:8080/images/logo.png)
+- REST endpoint 1: [http://13.217.224.52:8080/hello?name=Cloud](http://13.217.224.52:8080/hello?name=Cloud)
+- REST endpoint 2: [http://13.217.224.52:8080/pi](http://13.217.224.52:8080/pi)
+- REST endpoint 3: [http://13.217.224.52:8080/square?number=4](http://13.217.224.52:8080/square?number=4)
+- REST endpoint 4: [http://13.217.224.52:8080/server-time](http://13.217.224.52:8080/server-time)
+- `/shutdown` disabled in production: [http://13.217.224.52:8080/shutdown](http://13.217.224.52:8080/shutdown) → `404 Not Found`
 
 ## Evidence and results
 
-> Add screenshots under `docs/evidence/` and reference them here once the cloud deployment is
-> live. At minimum, capture:
+**Cloud deployment**
 
-- [ ] The deployed page loading in a browser at the public URL.
-- [ ] A static resource loading correctly (e.g. Network tab showing `images/logo.png`, `200`,
-      `image/png`).
-- [ ] At least two REST endpoint responses (e.g. `/hello?name=...` and `/pi`, or `/square`).
-- [ ] The configured environment variables on the instance, **without exposing secrets**
-      (e.g. `systemctl show webapplication -p Environment`, or the `Environment=` lines of the
-      unit file — this app has no secret variables to begin with).
-- [ ] `/shutdown` working locally in development (terminal output showing the graceful stop, as
-      reproduced in [Tests performed](#tests-performed)).
-- [ ] `/shutdown` returning `404` against the production/cloud deployment.
+| | |
+|---|---|
+| ![Cloud home page](docs/evidence/18-cloud-home.png) | ![Static resource in Network tab](docs/evidence/19-cloud-static-resource.png) |
+| ![/hello response](docs/evidence/20-cloud-hello.png) | ![/pi response](docs/evidence/21-cloud-pi.png) |
+
+**Environment variables on the instance (no secrets)**
+
+![Environment variables](docs/evidence/22-ec2-env-vars.png)
+
+**Graceful shutdown**
+
+| Local, `APP_ENV=development` | Cloud, `APP_ENV=production` |
+|---|---|
+| ![Shutdown works locally](docs/evidence/23-shutdown-dev-local.png) | ![Shutdown returns 404 in production](docs/evidence/24-shutdown-404-prod.png) |
 
 ## Verification checklist
 
@@ -351,14 +357,10 @@ target/webapplication.jar`):
       `STATIC_FILES_PATH`).
 - [x] `/shutdown` stops the local server gracefully.
 - [x] The server remains sequential (no threads/pools).
-- [ ] The application is deployed publicly to the cloud. *(pending — see [Deploying to AWS
-      EC2](#deploying-to-aws-ec2))*
-- [ ] The cloud deployment uses `APP_ENV=production`. *(set in `deploy/webapplication.service`;
-      confirm after deploying)*
-- [ ] The production deployment does not expose `/shutdown`. *(verified locally with
-      `APP_ENV=production`; confirm again against the live deployment)*
-- [ ] The README contains all required evidence screenshots. *(pending — see [Evidence and
-      results](#evidence-and-results))*
+- [x] The application is deployed publicly to the cloud — [http://13.217.224.52:8080/](http://13.217.224.52:8080/).
+- [x] The cloud deployment uses `APP_ENV=production` (set in `deploy/webapplication.service`).
+- [x] The production deployment does not expose `/shutdown` (returns `404`, see evidence).
+- [x] The README contains all required evidence screenshots.
 
 ## Known limitations
 
