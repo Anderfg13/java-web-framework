@@ -1,163 +1,377 @@
-# Mini Web Application — Sequential HTTP Server
+# Java WebFramework — A Maintainable Application Server
 
-## Descripción del proyecto
+## Project description
 
-Este proyecto extiende un servidor HTTP mínimo, construido directamente sobre sockets de Java (sin frameworks web), hasta convertirlo en una pequeña aplicación web que sirve recursos estáticos (HTML, JavaScript, imágenes) y expondrá un conjunto reducido de servicios dinámicos hardcodeados. El objetivo pedagógico es entender, "a mano", cómo funciona el protocolo HTTP y dónde están los límites reales de un servidor de una sola conexión, antes de introducir concurrencia o distribución.
+This project evolves the sequential HTTP server built in the previous lab into a small
+**application server** (a lightweight web framework): instead of hardcoding every dynamic route
+inside the server's connection loop with `if/else`, developers now register HTTP GET services
+as **Java lambda functions**. The framework:
 
-**Alcance actual:** el servidor es intencionalmente secuencial (procesa una conexión completa antes de aceptar la siguiente), corre en una sola instancia, y no usa hilos, pools, balanceadores, contenedores, bases de datos ni autenticación.
+- Serves static resources (HTML, CSS, JavaScript, images) from a configurable static-files root.
+- Lets an application register GET routes with `get(path, (req, resp) -> ...)`.
+- Extracts query-string parameters through `req.getValue("name")`.
+- Falls back to static files when no dynamic route matches, and returns `404` when nothing matches.
+- Reads deployment-specific configuration (port, greeting prefix, environment, static files path)
+  from environment variables instead of hardcoding them.
+- Supports a graceful, sequential shutdown through a `/shutdown` route, available only when
+  `APP_ENV=development`.
+- Remains strictly **sequential**: one connection is fully processed (accepted, read, dispatched,
+  answered, closed) before the next one is accepted. There are no threads, pools, or asynchronous
+  server-side execution.
 
-## Estado actual del proyecto
+The previous lab's server (`co.edu.escuelaing.webapplication.webapplication.Webapplication`, with
+its hardcoded `if/else` routes) is kept untouched in the repository as the deliverable of that
+earlier stage; it is not used by this lab and is not started by default.
 
-Este README documenta el proyecto **en construcción**, siguiendo la evolución descrita en la guía del laboratorio. Estado por etapa:
+## Required framework API
 
-| Etapa | Descripción | Estado |
-|---|---|---|
-| 0 | Configuración de Maven (JUnit 5, JDK objetivo) | ✅ Hecho |
-| 1 | Servidor de una sola conexión (verificación del protocolo) | ✅ Hecho |
-| 2 | Bucle secuencial de múltiples conexiones | ✅ Hecho |
-| 3 | Recursos estáticos: content-type, bytes, 404, 405, protección path traversal | ✅ Hecho |
-| 4 | Servicios hardcodeados (greeting, square, server-time, health) | ⏳ Pendiente |
-| 5 | Cliente asíncrono en JavaScript (fetch, estados de carga/error) | ⏳ Pendiente |
-| 6 | Pruebas unitarias con JUnit 5 | ⏳ Pendiente |
-| 7 | Empaquetado y despliegue en AWS EC2 | ⏳ Pendiente |
+```java
+import static co.edu.escuelaing.webframework.WebFramework.*;
 
-## Metáfora del sistema
+public class Application {
 
-Piensa en el servidor como **un mesero que atiende un restaurante pequeño, uno a la vez**:
+    public static void main(String[] args) throws Exception {
 
-- **La puerta del restaurante** (`ServerSocket`) siempre está abierta, esperando que llegue un cliente nuevo.
-- **El mesero** (el bucle principal del servidor) atiende a **una sola mesa a la vez**: recibe el pedido completo, lo prepara, lo entrega, y solo entonces va a atender a la siguiente mesa. Nunca atiende dos mesas al mismo tiempo — esa es la limitación intencional de esta etapa del proyecto.
-- **La vitrina de platos fijos** (la carpeta `public/`) contiene los recursos que el mesero simplemente saca y sirve tal cual: la página HTML, el script JavaScript, y las imágenes.
-- **Los platos que se cocinan al momento** son los servicios hardcodeados (greeting, square, server-time, health): el mesero reconoce un pedido exacto y genera una respuesta dinámica en JSON, sin improvisar ni delegar en un sistema de "menú genérico" (no hay un framework de ruteo).
-- **El cliente que hace pedidos rápidos sin bloquear la conversación** es el navegador: usando JavaScript asíncrono, el cliente puede pedir varias cosas "en segundo plano" sin congelar la página — pero eso no cambia que, del otro lado, el mesero sigue atendiendo un pedido a la vez.
-- **Mudar el restaurante a otro local** es desplegar la misma aplicación en una instancia EC2: cambia la dirección y quién puede tocar la puerta (el grupo de seguridad de AWS), pero el mesero sigue siendo uno solo.
+        staticfiles("/webroot");
 
-### Diagrama de arquitectura
+        get("/hello", (req, resp) -> {
+            String name = req.getValue("name");
+            if (name == null || name.isBlank()) {
+                name = "world";
+            }
+            return "Hello " + name;
+        });
 
-```
-                     ┌─────────────────────────┐
-                     │        Navegador         │
-                     │  (HTML + JS asíncrono)   │
-                     └────────────┬─────────────┘
-                                  │ HTTP (peticiones GET)
-                                  ▼
-                     ┌─────────────────────────┐
-                     │   ServerSocket (puerto)  │  <- "la puerta", siempre abierta
-                     └────────────┬─────────────┘
-                                  │ accept() por conexión
-                                  ▼
-                     ┌─────────────────────────┐
-                     │  Bucle secuencial        │  <- "el mesero": un cliente a la vez
-                     │  (while true + try/catch)│
-                     └──────┬───────────┬───────┘
-                             │           │
-                 recurso     │           │  ruta de servicio
-                 estático    ▼           ▼  (pendiente, Etapa 4)
-                ┌─────────────────┐  ┌─────────────────────┐
-                │  Carpeta public/│  │ Servicios hardcodeados│
-                │  (HTML, JS, img)│  │ (greeting, square,    │
-                └─────────────────┘  │  server-time, health) │
-                                     └─────────────────────┘
+        get("/pi", (req, resp) -> String.valueOf(Math.PI));
+
+        start();
+    }
+}
 ```
 
-### Responsabilidad de cada componente
+Adding a new route (e.g. `/square`) never requires modifying the server's connection-processing
+loop — only registering one more `get(...)` call.
 
-- **Navegador / cliente JS**: construye las peticiones a partir de la interacción del usuario, las envía de forma asíncrona, y actualiza solo la parte de la página que corresponde (sin recargar). *(Aún no implementado — Etapa 5.)*
-- **`ServerSocket`**: escucha en un puerto fijo y acepta conexiones entrantes, una por una.
-- **Bucle principal (`main`)**: por cada conexión aceptada, lee la primera línea de la petición (request line), decide si es una petición válida (método GET, no un intento de path traversal), y construye una respuesta completa antes de cerrar esa conexión y volver a esperar la siguiente. Un error en una conexión (`try/catch` genérico) nunca tumba el servidor completo.
-- **Carpeta `public/`**: contiene los recursos estáticos servidos tal cual, leídos siempre como bytes (para que el mismo camino sirva tanto texto como binarios).
-- **Servicios hardcodeados**: rutas especiales reconocidas con condiciones explícitas (no un framework de ruteo), que generan respuestas JSON dinámicas. *(Aún no implementado — Etapa 4.)*
+## Architecture
 
-## Decisiones de diseño
+### Diagram
 
-- **¿Por qué el servidor es secuencial?** Es un requisito explícito del laboratorio: entender primero el comportamiento y los límites de un servidor de una sola conexión, antes de introducir concurrencia. Esto se implementa con un `while(true)` que solo vuelve a `accept()` después de cerrar por completo la conexión anterior.
-- **¿Por qué las rutas son hardcodeadas?** El objetivo es que el mecanismo de "un path selecciona un comportamiento" quede explícito y legible con `if`/`switch`, sin esconderlo detrás de un framework, anotaciones o reflexión.
-- **¿Cómo se seleccionan los content-types?** Mediante un mapeo fijo por extensión de archivo (`.html`, `.js`, `.png`, `.jpg`/`.jpeg`), con un valor por defecto (`application/octet-stream`) para extensiones desconocidas.
-- **¿Cómo se rechazan rutas inseguras?** El path solicitado se resuelve contra la carpeta base `public/`, se normaliza con `Path.normalize()` (para colapsar cualquier `..`), y se verifica con `Path.startsWith(...)` que el resultado siga estando dentro de la carpeta base. Si no, se responde `403 Forbidden` sin revelar más información.
-- **¿Por qué el cliente será asíncrono?** Para que la interfaz no se congele mientras espera una respuesta del servidor — pero esto es una propiedad del cliente, no del servidor: el servidor sigue atendiendo una conexión a la vez sin importar cuántas peticiones asíncronas mande el navegador.
+```
+                     ┌───────────────────────────┐
+                     │          Browser           │
+                     │  (HTML + fetch, async JS)  │
+                     └─────────────┬───────────────┘
+                                   │ HTTP GET
+                                   ▼
+                     ┌───────────────────────────┐
+                     │        HttpServer          │  <- accepts one connection at a time,
+                     │  (ServerSocket + loop)     │     parses method/path/query string
+                     └──────┬──────────────┬───────┘
+                            │              │
+                 dynamic    │              │  nothing matched
+                 route      ▼              ▼
+                 ┌────────────────┐  ┌───────────────────────┐
+                 │     Router      │  │   StaticFileService    │
+                 │ path -> Service │  │  webroot/ (or          │
+                 │ (lambda)        │  │  STATIC_FILES_PATH)    │
+                 └────────┬────────┘  └───────────┬────────────┘
+                          │                        │
+                          ▼                        ▼
+                 ┌─────────────────┐      ┌─────────────────┐
+                 │ Application     │      │  404 Not Found   │
+                 │ lambda handler  │      │  (if no file)    │
+                 │ (Request,       │      └─────────────────┘
+                 │  Response)      │
+                 └─────────────────┘
 
-## Estructura del proyecto
+Application (registers routes) → WebFramework (get/staticfiles/start/stop)
+    → Router (path → lambda) + HttpServer (sockets, parsing, responses)
+        → StaticFileService (fallback for static resources)
+```
+
+### Responsibilities of the main components
+
+| Component | Responsibility |
+|---|---|
+| `Application` (`co.edu.escuelaing.app`) | Registers routes and reads its own configuration from environment variables. Knows nothing about sockets. |
+| `WebFramework` | Public facade: `staticfiles()`, `get()`, `start()`/`start(port)`, `stop()`. The only class an application developer needs to import. |
+| `Router` | Maps an HTTP method + path to the registered lambda (`Service`). Adding a route never touches the server loop. |
+| `HttpServer` | Accepts connections sequentially, parses the request line and query string, asks the `Router` for a match, falls back to `StaticFileService`, and writes the HTTP response. Implements the graceful shutdown flag. |
+| `Request` / `Response` | Represent HTTP data: `Request.getValue(name)` reads a query-string parameter; `Response` lets a lambda customize the status code and content type before the framework serializes the body. |
+| `StaticFileService` | Serves static resources: by default from the classpath (`src/main/resources/webroot`, bundled inside the jar); if `STATIC_FILES_PATH` is set, from that folder on disk instead. Rejects `..` segments to avoid resource-root escape. |
+
+### Required architecture metaphor: the office building
+
+| Building metaphor | Framework component |
+|---|---|
+| Building entrance and receptionist | `HttpServer`: accepts every visitor (connection) one at a time, reads what they are asking for, and decides where to send them. |
+| Directory in the lobby | `Router`: looks up which office (lambda) should handle a given request path. |
+| Individual offices | The lambda handlers registered with `get(...)`: each one implements one specific service (`/hello`, `/pi`, `/square`, `/server-time`). |
+| Document archive | `StaticFileService`: hands out the building's fixed documents (HTML, CSS, JS, images) as-is, without asking anyone to "do work". |
+| Building configuration board | Environment variables (`PORT`, `GREETING_PREFIX`, `APP_ENV`, `STATIC_FILES_PATH`): set once per building (per deployment), never hardcoded into an office's behavior. |
+| Closing procedure | Graceful shutdown (`/shutdown`, dev only): the receptionist finishes serving the visitor currently at the desk, sends them off, and only then locks the front door — nobody is left mid-conversation. |
+
+### Why this architecture is maintainable
+
+| Principle | Application in this lab |
+|---|---|
+| Separation of concerns | `HttpServer` only knows sockets and HTTP framing; it never knows what `/hello` or `/square` do. |
+| Modularity | Routing (`Router`), request/response abstractions, and static files (`StaticFileService`) are independent classes. |
+| Low coupling | A new `get(...)` call in `Application` never requires editing `HttpServer`. |
+| High cohesion | Each class has one job: `Router` matches paths, `StaticFileService` reads files, `HttpServer` handles sockets. |
+| Abstraction | The application developer calls `get()`/`staticfiles()`/`start()` without managing a single `Socket`. |
+| Externalized configuration | `PORT`, `GREETING_PREFIX`, `APP_ENV`, `STATIC_FILES_PATH` are read from the environment, never hardcoded. |
+| Extensibility | New services are added by registering more lambdas, not by editing the connection loop. |
+| Testability | `Router`, `Request`, `StaticFileService`, and the request-line/query-string parsing in `HttpServer` are unit-tested without opening real sockets. |
+| Operational maintainability | The exact same jar runs locally (`PORT` defaults to `8080`) and in the cloud (`PORT` injected by the platform). |
+
+**Before → After**
+
+```
+Before (previous lab)                       After (this lab)
+HTTP Server                                 HTTP Server → Router → Lambda handlers
+ ├── Socket management                                │        ├── /hello
+ ├── HTTP parsing                                     │        ├── /pi
+ ├── Static files                                     │        └── Future endpoints
+ ├── /greeting implementation (if/else)                └── StaticFileService
+ ├── /square implementation (if/else)
+ └── Every future route (more if/else)
+```
+
+## Project structure
 
 ```
 networking-lab-2/
-├── pom.xml                          # Descriptor de Maven (dependencias, build)
-├── public/                          # Recursos públicos servidos por el servidor
-│   ├── index.html
-│   ├── script.js
-│   └── images/
-│       ├── Databricks_Logo.png
-│       └── File-Handling-in-Java.jpg
-└── src/
-    ├── main/java/co/edu/escuelaing/webapplication/webapplication/
-    │   └── Webapplication.java      # Servidor HTTP (punto de entrada)
-    └── test/java/                   # Pruebas unitarias (pendiente, Etapa 6)
+├── pom.xml
+├── deploy/
+│   └── webapplication.service                # systemd unit for the cloud deployment
+├── public/                                   # previous lab's static resources (kept as-is)
+├── src/
+│   ├── main/java/co/edu/escuelaing/
+│   │   ├── webframework/                     # the framework
+│   │   │   ├── WebFramework.java             # staticfiles(), get(), start(), stop()
+│   │   │   ├── HttpServer.java               # sequential connection loop
+│   │   │   ├── Router.java                   # path -> lambda
+│   │   │   ├── Service.java                  # (Request, Response) -> String
+│   │   │   ├── Request.java / Response.java
+│   │   │   └── StaticFileService.java
+│   │   ├── app/
+│   │   │   └── Application.java              # example application using the framework
+│   │   └── webapplication/webapplication/
+│   │       └── Webapplication.java           # previous lab's server, kept for reference
+│   ├── main/resources/webroot/               # static resources served by the new framework
+│   │   ├── index.html
+│   │   ├── app.js
+│   │   ├── styles.css
+│   │   └── images/logo.png
+│   └── test/java/co/edu/escuelaing/
+│       ├── webframework/                     # unit tests for the framework
+│       └── webapplication/webapplication/    # previous lab's tests, kept as-is
 ```
 
-La carpeta `public/` vive **al lado** del código fuente (no dentro de `src/main/resources`) a propósito: así el servidor la lee como archivos reales del sistema de archivos (necesario para la validación de path traversal), y puede acompañar al artefacto empaquetado como una carpeta independiente al momento del despliegue.
+## Prerequisites
 
-## Prerrequisitos
+- **Java 21** (JDK). Check with `java -version`.
+- **Maven 3.9+**. Check with `mvn -version`.
 
-- **Java 21** (JDK). Verifica con `java -version`.
-- **Maven 3.9+**. Verifica con `mvn -version`.
-- Un navegador moderno para las pruebas manuales.
-
-## Instalación y build
+## Build and run locally
 
 ```bash
 git clone https://github.com/Anderfg13/networking-lab-2.git
 cd networking-lab-2
-mvn clean compile
+mvn clean package
 ```
 
-## Cómo correrlo localmente
+This compiles the framework and the example application, runs the unit tests, and produces
+`target/webapplication.jar` (its manifest points to `co.edu.escuelaing.app.Application`, so
+`java -jar` runs the new framework-based app, not the previous lab's server).
 
-El puerto está actualmente fijo en el código (`35000`) — se hará configurable en una etapa posterior. Para ejecutar:
+Run it:
 
-- **Desde NetBeans**: botón "Run" sobre el proyecto (usa el goal `exec:exec` configurado internamente).
-- **Desde terminal**, tras compilar:
-  ```bash
-  mvn exec:exec
-  ```
+```bash
+java -jar target/webapplication.jar                 # PORT defaults to 8080, APP_ENV to development
+PORT=8081 java -jar target/webapplication.jar        # explicit port
+GREETING_PREFIX=Hola PORT=8081 java -jar target/webapplication.jar
+APP_ENV=production PORT=8081 java -jar target/webapplication.jar   # disables /shutdown
+```
 
-Luego abre `http://localhost:35000/` en el navegador. Para detenerlo, interrumpe el proceso (Ctrl+C en la terminal, o el botón de stop en NetBeans).
+Then open `http://localhost:<port>/`.
 
-## Cómo usar la aplicación (estado actual)
+To run the previous lab's server instead (kept for reference, not part of this lab's grading):
 
-Por ahora la aplicación sirve recursos estáticos:
+```bash
+java -cp target/webapplication.jar co.edu.escuelaing.webapplication.webapplication.Webapplication
+```
 
-- `http://localhost:35000/` → sirve `index.html`.
-- `http://localhost:35000/script.js`, `.../images/*.png`, `.../images/*.jpg` → sirven los recursos correspondientes con su content-type correcto.
-- Una ruta inexistente responde `404 Not Found`.
-- Un método distinto de `GET` (probado con Postman/curl) responde `405 Method Not Allowed`.
-- Un intento de salir de la carpeta `public/` (ej. `/../pom.xml`, probado con `curl --path-as-is`) responde `403 Forbidden`.
+## Environment variables
 
-Los servicios dinámicos (`greeting`, `square`, `server-time`, `health`) y la interfaz interactiva en JavaScript están pendientes (Etapas 4 y 5).
+| Variable | Purpose | Local default | Used by |
+|---|---|---|---|
+| `PORT` | HTTP server port | `8080` | `WebFramework.start()` |
+| `GREETING_PREFIX` | Message used by the `/hello` route | `Hello` | `Application` |
+| `APP_ENV` | Execution environment (`development` / `production`) | `development` | `Application` — gates registration of `/shutdown` |
+| `STATIC_FILES_PATH` | Optional external folder to serve static files from, overriding the bundled classpath `webroot` | not set (uses the jar's `webroot`) | `StaticFileService` |
 
-## Cómo correr las pruebas
+No credentials, tokens, or secrets are configured or committed for this application.
 
-Las pruebas automatizadas con JUnit 5 están pendientes (Etapa 6). La dependencia ya está configurada en `pom.xml` con `scope=test`, lista para agregar clases bajo `src/test/java`. Mientras tanto, la validación es manual:
+## Routes
 
-- Verificación del protocolo con las herramientas de desarrollador del navegador (pestaña Network).
-- Verificación de métodos no soportados y path traversal con Postman / `curl`.
+| Route | Method | Query parameter | Example | Result |
+|---|---|---|---|---|
+| `/` | GET | — | `/` | Serves `webroot/index.html` |
+| `/app.js`, `/styles.css`, `/images/logo.png` | GET | — | `/images/logo.png` | Static resources, served as bytes with the correct `Content-Type` |
+| `/hello` | GET | `name` (optional) | `/hello?name=Pedro` | `<GREETING_PREFIX> Pedro` (defaults to `world` if missing) |
+| `/pi` | GET | — | `/pi` | The value of `Math.PI` |
+| `/square` | GET | `number` | `/square?number=4` | `{"number":4.0,"square":16.0}`; `400` if missing or not numeric |
+| `/server-time` | GET | — | `/server-time` | `{"serverTime":"<ISO-8601>"}` |
+| `/shutdown` | GET | — | `/shutdown` | Only registered when `APP_ENV=development`; stops the server gracefully after answering. `404` in production. |
+| any other path | GET | — | `/unknown` | `404 Not Found` |
+| any path | non-GET | — | `POST /hello` | `405 Method Not Allowed` |
 
-## Despliegue en AWS (pendiente)
+## Example web application
 
-El despliegue a una instancia EC2 (Etapa 7) todavía no se ha realizado. Se documentará aquí una vez completado: transferencia del artefacto empaquetado junto con la carpeta `public/`, instalación del JDK 21 en la instancia, arranque como servicio administrado, y verificación del servicio de salud desde la instancia antes de probarlo externamente.
+`src/main/resources/webroot/index.html`, `app.js`, and `styles.css` (served through
+`staticfiles("/webroot")`) demonstrate the framework: one HTML page, one CSS file, one image
+(`images/logo.png`), and a JavaScript client (`app.js`) that calls `/hello`, `/pi`, `/square`,
+and `/server-time` with `fetch()` — five asynchronous calls in total, satisfying the "at least
+one asynchronous browser call" requirement several times over.
 
-## Evidencia y resultados
+## Tests performed
 
-Pendiente de adjuntar capturas de: carga de recursos estáticos con status y content-type correctos, respuesta 404/405/403, y ejecución remota en EC2.
+Unit tests (`mvn test`), without opening real sockets:
 
-## Limitaciones conocidas
+- `RouterTest`: a registered GET route resolves to its lambda; an unregistered path resolves to
+  `null` (static-file fallback); a non-GET method never resolves.
+- `RequestTest`: `getValue()` returns a present parameter and `null` for a missing one.
+- `StaticFileServiceTest`: an existing classpath resource resolves with the right content type; a
+  missing resource and a `..` path-traversal attempt both resolve to `null`; content-type mapping
+  by extension.
+- `HttpServerTest`: request-path/query-string splitting, query-parameter decoding (including
+  URL-encoded values and multiple parameters), and HTTP header construction.
 
-- El servidor es **estrictamente secuencial**: atiende una conexión completa antes de aceptar la siguiente. No hay hilos, pools ni concurrencia de ningún tipo.
-- Solo soporta el método `GET`; cualquier otro método recibe `405`.
-- Las rutas de servicio son **hardcodeadas**, no hay un framework de ruteo ni descubrimiento dinámico de endpoints.
-- No es un servidor HTTP de producción: no implementa keep-alive, HTTPS, compresión, ni manejo completo de todos los headers del estándar HTTP.
-- Corre en una única instancia EC2: un solo punto de falla y una sola capacidad de cómputo.
+Manual end-to-end verification with `curl` against the packaged jar (`java -jar
+target/webapplication.jar`):
 
-## Autor y agradecimientos
+- `GET /hello?name=Pedro` → `200`, dynamic response from the lambda, honoring `GREETING_PREFIX`.
+- `GET /hello` (no `name`) → `200`, falls back to `world` without failing.
+- `GET /hello?name=Pedro&language=en` → multiple query parameters read correctly; the unused one
+  does not break anything.
+- `GET /pi`, `GET /square?number=4`, `GET /server-time` → `200`, dynamic responses.
+- `GET /square` (missing `number`) → `400 Bad Request`.
+- `GET /`, `GET /app.js`, `GET /images/logo.png` → `200`, static resources with correct
+  `Content-Type` (including a binary image, byte-for-byte).
+- `GET /unknown` → `404 Not Found`.
+- `POST /hello` → `405 Method Not Allowed`.
+- `GET /shutdown` with `APP_ENV=development` → `200` with a confirmation message, the process
+  then exits its main loop and stops accepting new connections (verified: a subsequent request
+  gets connection refused).
+- `GET /shutdown` with `APP_ENV=production` → `404 Not Found` (the route is never registered).
 
-**Autor:** Anderson Fabian Garcia Nieto.
+> Evidence: see [Evidence and results](#evidence-and-results) below for the screenshots to attach.
 
-Este proyecto se desarrolló como parte del laboratorio "From a Minimal HTTP Server to a Web Application on AWS" del curso de Telemática/TDSE. El desarrollo contó con la asistencia de Claude (Anthropic) como tutor conceptual durante la implementación.
+## Deploying to AWS EC2
+
+> This section documents the procedure to deploy the built artifact (`target/webapplication.jar`,
+> which already bundles `webroot/` inside it). Creating/configuring the EC2 instance itself must
+> be done from your own AWS account; the steps below reuse the same instance/security-group setup
+> as the previous lab.
+
+1. **Launch or reuse the EC2 instance**: a Linux AMI (e.g. Amazon Linux 2023), default public
+   VPC/subnet.
+2. **Security group**: allow the administration port (22, restricted to your IP, or use Session
+   Manager) and the application port (`8080`, or whichever `PORT` you configure) as inbound TCP
+   rules — this is what makes the server reachable from outside `localhost`.
+3. **Connect** to the instance (Session Manager, EC2 Instance Connect, or SSH).
+4. **Install JDK 21**:
+   ```bash
+   sudo dnf install -y java-21-amazon-corretto
+   ```
+5. **Transfer the artifact** (from your local machine — the jar already contains `webroot/`, so
+   no separate `public/` copy is needed for this lab's app):
+   ```bash
+   scp target/webapplication.jar ec2-user@<public-ip>:/home/ec2-user/webapplication/
+   ```
+6. **Verify manually before wiring up systemd**:
+   ```bash
+   PORT=8080 APP_ENV=production java -jar webapplication.jar &
+   curl http://localhost:8080/pi
+   curl http://localhost:8080/hello?name=EC2
+   curl -i http://localhost:8080/shutdown   # must be 404 in production
+   ```
+7. **Configure as a managed service** (`deploy/webapplication.service` already sets
+   `APP_ENV=production` and `PORT=8080`):
+   ```bash
+   sudo cp deploy/webapplication.service /etc/systemd/system/webapplication.service
+   sudo systemctl daemon-reload
+   sudo systemctl enable --now webapplication
+   sudo systemctl status webapplication
+   journalctl -u webapplication -f
+   ```
+8. **Test from your own computer**: `http://<instance-public-ip>:8080/`.
+9. To stop it: `sudo systemctl stop webapplication` (the `/shutdown` route is intentionally
+   unavailable in this configuration, since `APP_ENV=production`).
+
+**Cloud platform used:** AWS EC2 (Amazon Linux, systemd-managed process).
+
+**Public deployment URL:** `TODO — fill in with the EC2 public IP/DNS after deploying, e.g. http://<public-ip>:8080/`
+
+**Example URLs once deployed:**
+
+- Static page: `http://<public-ip>:8080/`
+- Static image: `http://<public-ip>:8080/images/logo.png`
+- REST endpoint 1: `http://<public-ip>:8080/hello?name=Cloud`
+- REST endpoint 2: `http://<public-ip>:8080/pi`
+
+## Evidence and results
+
+> Add screenshots under `docs/evidence/` and reference them here once the cloud deployment is
+> live. At minimum, capture:
+
+- [ ] The deployed page loading in a browser at the public URL.
+- [ ] A static resource loading correctly (e.g. Network tab showing `images/logo.png`, `200`,
+      `image/png`).
+- [ ] At least two REST endpoint responses (e.g. `/hello?name=...` and `/pi`, or `/square`).
+- [ ] The configured environment variables on the instance, **without exposing secrets**
+      (e.g. `systemctl show webapplication -p Environment`, or the `Environment=` lines of the
+      unit file — this app has no secret variables to begin with).
+- [ ] `/shutdown` working locally in development (terminal output showing the graceful stop, as
+      reproduced in [Tests performed](#tests-performed)).
+- [ ] `/shutdown` returning `404` against the production/cloud deployment.
+
+## Verification checklist
+
+- [x] The project builds successfully with Maven (`mvn clean package`).
+- [x] The server serves HTML, CSS, JavaScript, and an image.
+- [x] At least two GET lambda routes work locally (`/hello`, `/pi`, plus `/square` and
+      `/server-time`).
+- [x] Query values can be read from the request (`req.getValue(...)`).
+- [x] Unknown resources return HTTP `404`.
+- [x] The application reads `PORT` from the environment.
+- [x] At least one additional environment variable is used (`GREETING_PREFIX`, `APP_ENV`,
+      `STATIC_FILES_PATH`).
+- [x] `/shutdown` stops the local server gracefully.
+- [x] The server remains sequential (no threads/pools).
+- [ ] The application is deployed publicly to the cloud. *(pending — see [Deploying to AWS
+      EC2](#deploying-to-aws-ec2))*
+- [ ] The cloud deployment uses `APP_ENV=production`. *(set in `deploy/webapplication.service`;
+      confirm after deploying)*
+- [ ] The production deployment does not expose `/shutdown`. *(verified locally with
+      `APP_ENV=production`; confirm again against the live deployment)*
+- [ ] The README contains all required evidence screenshots. *(pending — see [Evidence and
+      results](#evidence-and-results))*
+
+## Known limitations
+
+- The server is **strictly sequential**: no threads, pools, or concurrent request handling.
+- It only supports the `GET` method; any other method gets `405`.
+- Routes are matched by exact path only (no path parameters or wildcards).
+- It is not a production-grade HTTP server: no keep-alive, HTTPS, compression, or full HTTP
+  header handling.
+
+## Author and acknowledgments
+
+**Author:** Anderson Fabian Garcia Nieto.
+
+This project was developed for the "Building and Deploying a Maintainable Application Server"
+lab for the Telematics/TDSE course, evolving the sequential HTTP server from the previous lab.
+Development was assisted by Claude (Anthropic) as a conceptual and implementation tutor.
